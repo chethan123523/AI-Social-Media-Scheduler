@@ -1,0 +1,106 @@
+import cron from "node-cron";
+import { Post } from "../models/post.js";
+import { Account } from "../models/account.js";
+import zernio from "../config/zernio.js";
+import { ActivityLog } from "../models/activitylog.js";
+
+export const initScheduler = () => {
+  cron.schedule("* * * * *", async () => {
+    try {
+      const now = new Date();
+
+      const postsToPublish = await Post.find({
+        status: "scheduled",
+        scheduledFor: {
+          $lte: now,
+        },
+      });
+
+      for (const post of postsToPublish) {
+        try {
+          const accounts = await Account.find({
+            user: post.user,
+            platform: { $in: post.platforms },
+            status: "connected",
+             zernioAccountId:{$exists:true}
+          });
+
+          if (accounts.length === 0) {
+            console.log(
+              `No connected Zernio accounts found for post ${post._id}`
+            );
+            continue;
+          }
+
+          const zernioPlatforms = accounts.map((acc) => ({
+            platform: acc.platform as any,
+            accountId: acc.zernioAccountId!,
+          }));
+
+          const payload = {
+            content: post.content,
+            publishNow: true,
+            ...(post.mediaUrl
+              ? {
+                  mediaItems: [
+                    {
+                      type: post.mediaType || "image",
+                      url: post.mediaUrl,
+                    },
+                  ],
+                }
+              : {}),
+            platforms: zernioPlatforms,
+          };
+
+          console.log(
+  `Publishing post ${post._id} to Zernio with media: ${
+    post.mediaUrl || "none"
+  }`
+);
+
+console.log("FINAL PLAY");
+console.log(JSON.stringify(payload,null,2))
+const response = await zernio.posts.createPost({
+  body: payload,
+});
+          const publishedPost=(response.data as any)?.post || response.data;
+          if(!publishedPost){
+            throw new Error ("Failed to post  the  objects from zernio response");
+          }
+          console.log(`Zernio post created:${publishedPost._id||publishedPost.id}`);
+          post.status = "published";
+          await post.save();
+
+          await ActivityLog.create({
+            user:post.user,
+            actionType:"POST_PUBLISHED",
+            description:`Published posts to ${accounts.map((a)=>a.platform).join(",")}`,
+            relatedPost:post._id,
+          })
+        } catch (err: any) {
+  console.error("========== ZERNIO ERROR ==========");
+  console.error("Post ID:", post._id);
+  console.error("Status:", err?.response?.status);
+  console.error("Headers:", err?.response?.headers);
+  console.error("Response:", JSON.stringify(err?.response?.data, null, 2));
+  console.error("Message:", err?.message);
+  console.error("==================================");
+
+  post.status = "failed";
+  await post.save();
+}
+      }
+
+      if (postsToPublish.length > 0) {
+        console.log(
+          `Evaluated ${postsToPublish.length} posts at ${now.toISOString()}`
+        );
+      }
+    } catch (error) {
+      console.error("Error in scheduler:", error);
+    }
+  });
+
+  console.log("Scheduler service initialized.");
+};
