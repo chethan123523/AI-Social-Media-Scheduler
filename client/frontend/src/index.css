@@ -30,7 +30,7 @@ button {
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-    width: 6px;
+    width: 7px;
     height: 6px;
 }
 ::-webkit-scrollbar-track {
